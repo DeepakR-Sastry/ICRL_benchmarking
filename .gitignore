@@ -1,0 +1,9 @@
+CLAUDE.md
+/CLAUDE.md
+/docs/
+.venv/
+__pycache__/
+*.egg-info/
+runs/
+.pytest_cache/
+expert_data/
