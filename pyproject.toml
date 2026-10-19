@@ -10,10 +10,12 @@ requires-python = ">=3.13"
 dependencies = [
     "gymnasium",
     "numpy",
+    "torch",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest"]
+validate = ["stable-baselines3"]
 
 [tool.setuptools.packages.find]
 include = ["icrl_bench*"]
