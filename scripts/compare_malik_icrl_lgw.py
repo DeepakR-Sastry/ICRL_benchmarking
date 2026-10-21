@@ -1,6 +1,6 @@
 """Runs Malik's own icrl.py (his repo, through his venv) on LapGridWorld with
 the settings of our validation's schedule B, and compares it per round with
-our runs (scripts/validate_icrl_lgw.py, runs/validate_icrl_lgw/B_seed*.csv).
+our runs (scripts/validate_icrl_lgw.py, runs/validate_icrl_lgw/B_seed*/metrics.csv).
 
 His settings: the README command with Figure 3a's schedule:
   -er 20 -tk 0.01 -cl 20 -clr 0.003 -bi 20 -dno -dnr -dnc -ft 1e4 -ni 12,
@@ -114,7 +114,7 @@ def run_malik(job):
 
 def read_ours(seed, rounds):
     variant = {12: "B", 24: "B_long"}[rounds]
-    with open(OURS / f"{variant}_seed{seed}.csv") as f:
+    with open(OURS / f"{variant}_seed{seed}" / "metrics.csv") as f:
         return [{k: float(row[k]) for k in KEYS} for row in csv.DictReader(f)]
 
 
