@@ -5,6 +5,7 @@ from icrl_bench.agents.ppo import PPO, PPOSettings
 from icrl_bench.agents.ppo_lagrangian import PPOLagrangian, PPOLagrangianSettings
 from icrl_bench.envs import lap_grid_world
 from icrl_bench.featurizers import lap_grid_world as lap_grid_world_features
+from icrl_bench.methods.binary_classifier import BinaryClassifier, BinaryClassifierSettings
 from icrl_bench.methods.maximum_entropy import MaximumEntropy, MaximumEntropySettings
 
 # name -> gymnasium env class; config arguments go to its constructor.
@@ -32,6 +33,7 @@ AGENTS = {
 
 METHODS = {
     "maximum_entropy": (MaximumEntropy, MaximumEntropySettings),
+    "binary_classifier": (BinaryClassifier, BinaryClassifierSettings),
 }
 
 

@@ -1,0 +1,27 @@
+# Binary Classifier ICRL on LapGridWorld: Malik et al.'s README command
+# (docs/methods.md), compared with Figure 3a's BC curve (docs/results.md):
+# --train_gail_lambda -nis -er 20 -tk 0.01 -cl 20 -crc 0.5 -clr 0.01
+# -ft 10000 --n_steps 2000 -ni 12 -bi 10 -dno -dnr -dnc -tei LGW-v0 -eei CLGW-v0
+# -crc is not set: his code ignores it in this branch. Unset = his CLI defaults.
+nominal_env: {name: lap_grid_world}                   # -tei LGW-v0
+eval_env: {name: lap_grid_world, constrained: true}   # -eei CLGW-v0
+true_cost: {name: lap_grid_world}
+featurizer: {name: lap_grid_world}
+expert: expert_data/lgw_forward.pkl                   # -er 20: 20 trajectories
+n_envs: 5
+agent:
+  name: ppo_lagrangian
+  target_kl: 0.01                                     # -tk
+  n_steps: 2000                                       # --n_steps: 5 x 2000 = one 10,000-step rollout per round
+method:
+  name: binary_classifier
+  hidden_sizes: [20]                                  # -cl 20
+  learning_rate: 0.01                                 # -clr
+  backward_iters: 10                                  # -bi
+  # The network sees [cell, cell, is_forward], as Malik's does by a bug
+  # (docs/methods.md, "Bugs in the official code" (2)).
+  input_columns: [0, 0, 1]
+loop:
+  n_rounds: 12                                        # -ni
+  steps_per_round: 10000                              # -ft
+seed: 0

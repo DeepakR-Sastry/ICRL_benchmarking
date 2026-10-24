@@ -2,8 +2,7 @@
 
 Follows Malik et al.'s fork of stable-baselines3 0.9.0 (github.com/
 shehryar-malik/icrl, commit f28214e): stable_baselines3/ppo/ppo.py and the
-SB3 files it relies on, cited where each piece is used. Differences from the
-latest SB3 are listed in docs/agents.md."""
+SB3 files it relies on, cited where each piece is used."""
 
 from collections import deque
 from dataclasses import dataclass
