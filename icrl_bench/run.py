@@ -44,12 +44,13 @@ def build(config):
                 true_cost=true_cost)
 
 
-def run(config, run_dir):
+def run(config, run_dir, callback=None):
     """Build every box, run the ICRL loop, and write the run folder:
     config.yaml (every setting, defaults filled in) and metrics.csv (one
     row per round, written as soon as the round ends, so a crash keeps
     every finished round). Refuses a folder that already holds a run, so results
-    are never overwritten. Returns the per-round log."""
+    are never overwritten. callback, if given, is called with each row
+    after it is written (e.g. to log to wandb). Returns the per-round log."""
     run_dir = Path(run_dir)
     if (run_dir / "config.yaml").exists():
         raise FileExistsError(f"{run_dir} already holds a run")
@@ -67,5 +68,7 @@ def run(config, run_dir):
                 writer.writeheader()
             writer.writerow(row)
             f.flush()
+            if callback is not None:
+                callback(row)
 
         return run_icrl(**build(config), settings=config.loop, callback=write_row)
