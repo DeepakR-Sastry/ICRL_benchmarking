@@ -93,7 +93,7 @@ def _named(block, registry, where, seed=None):
     if name not in registry:
         raise ValueError(f"{where}: name {name!r} is not one of {sorted(registry)}")
     if seed is None:
-        _check_no_numbers_as_text(block, where)
+        _check_no_numbers_or_booleans_as_text(block, where)
         return Named(name, block)
     _, settings_cls = registry[name]
     return Named(name, _settings(settings_cls, block, seed, where))
@@ -102,7 +102,7 @@ def _named(block, registry, where, seed=None):
 def _settings(settings_cls, block, seed, where):
     """Fill a settings dataclass from a config block; the config's one seed
     is added here."""
-    _check_no_numbers_as_text(block, where)
+    _check_no_numbers_or_booleans_as_text(block, where)
     known = {f.name for f in fields(settings_cls)}
     for key in block:
         if key not in known:
@@ -113,11 +113,19 @@ def _settings(settings_cls, block, seed, where):
     return settings_cls(**values, seed=seed)
 
 
-def _check_no_numbers_as_text(block, where):
-    """PyYAML reads 1e4 and 1.0e4 as text, not numbers (it needs 1.0e+4);
-    refuse any text that is really a number."""
+# YAML reads these unquoted as booleans; quoted, they are text, and any
+# non-empty text counts as True in Python ("false" would mean on).
+BOOLEAN_WORDS = {"true", "false", "yes", "no", "on", "off"}
+
+
+def _check_no_numbers_or_booleans_as_text(block, where):
+    """PyYAML reads 1e4 and 1.0e4 as text, not numbers (it needs 1.0e+4),
+    and "false" in quotes as text, not a boolean; refuse any text that is
+    really a number or a boolean."""
     for key, value in block.items():
         if isinstance(value, str):
+            if value.lower() in BOOLEAN_WORDS:
+                raise ValueError(f"{where}: {key} = {value!r} is text; write booleans unquoted: true or false")
             try:
                 float(value)
             except ValueError:

@@ -46,6 +46,8 @@ def test_reads_the_settings_validate_icrl_lgw_uses(tmp_path):
     (dict(agent={"name": "ppo_lagrangian", "seed": 1}), "set the seed once"),
     (dict(loop={"steps_per_round": "1e4"}), "is text"),
     (dict(eval_env={"name": "lap_grid_world", "max_episode_steps": "1.0e4"}), "is text"),
+    (dict(method={"name": "maximum_entropy", "importance_sampling": "false"}), "is text"),
+    (dict(nominal_env={"name": "lap_grid_world", "constrained": "False"}), "is text"),
     (dict(featurizer={"name": "lap_grid_world", "scale": 2}), "take no arguments"),
 ])
 def test_mistakes_are_refused(changes, message):

@@ -4,7 +4,9 @@ point") and writes runs/<name>/: config.yaml and metrics.csv.
 Run from the repo root (paths inside configs are relative to it):
   python scripts/run_icrl.py --config configs/lgw/maximum_entropy.yaml
       [--seed 3]           replaces the config's seed
-      [--name my_run]      default: <config file name>_seed<seed>
+      [--name my_run]      default: <config folder>_<config file name>_seed<seed>,
+                           e.g. hc_maximum_entropy_seed0 (configs/lgw and configs/hc
+                           share file names, so the folder keeps runs apart)
       [--wandb-project P]  also log every round to wandb, under Malik's
       [--wandb-group G]    icrl.py metric names (default group "ours")"""
 
@@ -37,7 +39,8 @@ def main():
     args = parser.parse_args()
 
     config = load_config(args.config, seed=args.seed)
-    name = args.name or f"{Path(args.config).stem}_seed{config.seed}"
+    path = Path(args.config)
+    name = args.name or f"{path.parent.name}_{path.stem}_seed{config.seed}"
 
     callback, wandb_run = None, None
     if args.wandb_project is not None:
