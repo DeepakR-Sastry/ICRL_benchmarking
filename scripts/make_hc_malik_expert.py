@@ -1,9 +1,12 @@
 """Converts Malik's shipped HCWithPos expert rollouts into one of our pile
 files, so configs point at it like any other pile. 10 rollouts, as his
-README HalfCheetah run (-er 10). Needs his repo at ~/refs/malik_icrl.
+README HalfCheetah run (-er 10). Needs a clone of his repo.
 
-Run from anywhere: python scripts/make_hc_malik_expert.py"""
+Run from anywhere: python scripts/make_hc_malik_expert.py
+    [--source DIR]  his -ep folder; default ~/refs/malik_icrl/icrl/expert_data/HCWithPos-New
+                    (on Vulcan: ~/scratch/icrl/icrl/expert_data/HCWithPos-New)"""
 
+import argparse
 from datetime import date
 from pathlib import Path
 
@@ -12,19 +15,22 @@ from icrl_bench.data.piles import save_pile
 from icrl_bench.envs.half_cheetah_with_pos import true_cost
 
 N_ROLLOUTS = 10
-SOURCE = Path.home() / "refs/malik_icrl/icrl/expert_data/HCWithPos-New"  # his -ep
+SOURCE = Path.home() / "refs/malik_icrl/icrl/expert_data/HCWithPos-New"  # his -ep, by default
 COMMIT = "f28214e"
 PATH = Path(__file__).resolve().parents[1] / "expert_data" / "hc_malik.pkl"
 
 
 def main():
-    trajectories = load_malik_rollouts(SOURCE, N_ROLLOUTS)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--source", type=Path, default=SOURCE)
+    source = parser.parse_args().source.expanduser()
+    trajectories = load_malik_rollouts(source, N_ROLLOUTS)
     costs = [sum(true_cost(step.state, step.action) for step in t.steps) for t in trajectories]
 
     metadata = {
         "env": "HCWithPos-v0 (Malik's, MuJoCo 2)",
         "policy": "Malik's shipped expert rollouts",
-        "source": f"{SOURCE}/files/EXPERT/rollouts/0..{N_ROLLOUTS - 1}.pkl",
+        "source": f"{source}/files/EXPERT/rollouts/0..{N_ROLLOUTS - 1}.pkl",
         "commit": COMMIT,
         "n_episodes": N_ROLLOUTS,
         "pairing": "Step(his obs row t-1, his action t), t = 1..499; reward None",
