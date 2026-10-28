@@ -12,7 +12,7 @@ class Step:
 
     state: Any
     action: Any
-    reward: float
+    reward: float | None  # None when the source doesn't store it (Malik's expert files)
 
 
 @dataclass(frozen=True)

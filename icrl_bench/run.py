@@ -47,7 +47,8 @@ def build(config):
 def run(config, run_dir):
     """Build every box, run the ICRL loop, and write the run folder:
     config.yaml (every setting, defaults filled in) and metrics.csv (one
-    row per round). Refuses a folder that already holds a run, so results
+    row per round, written as soon as the round ends, so a crash keeps
+    every finished round). Refuses a folder that already holds a run, so results
     are never overwritten. Returns the per-round log."""
     run_dir = Path(run_dir)
     if (run_dir / "config.yaml").exists():
@@ -56,10 +57,15 @@ def run(config, run_dir):
     # Written first, so even a crashed run records what it was.
     save_config(config, run_dir / "config.yaml")
 
-    log = run_icrl(**build(config), settings=config.loop)
-
     with open(run_dir / "metrics.csv", "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=list(log[0]))
-        writer.writeheader()
-        writer.writerows(log)
-    return log
+        writer = None
+
+        def write_row(row):
+            nonlocal writer
+            if writer is None:  # columns = the first row's keys
+                writer = csv.DictWriter(f, fieldnames=list(row))
+                writer.writeheader()
+            writer.writerow(row)
+            f.flush()
+
+        return run_icrl(**build(config), settings=config.loop, callback=write_row)

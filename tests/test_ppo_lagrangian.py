@@ -6,7 +6,7 @@ from gymnasium.vector import AutoresetMode, SyncVectorEnv
 from gymnasium.wrappers import RecordEpisodeStatistics
 
 from icrl_bench.agents.ppo_lagrangian import (
-    ActorTwoCritics, LagrangeMultiplier, PPOLagrangian, PPOLagrangianSettings, collect_rollout,
+    ActorTwoCritics, LagrangeMultiplier, Normalizer, PPOLagrangian, PPOLagrangianSettings, collect_rollout,
     compute_gae, ppo_update, softplus_inverse,
 )
 from icrl_bench.core.cost_wrapper import CostWrapper
@@ -66,7 +66,9 @@ def lgw_envs(n_envs, cost_fn=true_cost, cost_wrapper=True):
 
 def collect(envs, obs, n_steps):
     net = ActorTwoCritics(envs.single_observation_space, envs.single_action_space)
-    return collect_rollout(net, envs, obs, np.zeros(envs.num_envs, np.float32), n_steps,
+    normalizer = Normalizer(envs.single_observation_space.shape, False, False, False, 0.99, 0.99)
+    normalizer.reset(envs.num_envs)
+    return collect_rollout(net, normalizer, envs, obs, np.zeros(envs.num_envs, np.float32), n_steps,
                            0.99, 0.95, 0.99, 0.95)
 
 

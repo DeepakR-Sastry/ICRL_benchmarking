@@ -74,3 +74,23 @@ def test_run_writes_the_run_folder_and_never_overwrites_it(tmp_path):
     assert float(rows[1]["true/cost"]) == log[1]["true/cost"]
     with pytest.raises(FileExistsError):
         run(config, tmp_path / "my_run")
+
+
+def test_run_keeps_finished_rounds_when_a_later_round_crashes(tmp_path, monkeypatch):
+    # The method's second update fails, as a crash in round 1 would.
+    update = MaximumEntropy.update
+    calls = []
+
+    def update_then_crash(self, expert, nominal):
+        calls.append(1)
+        if len(calls) == 2:
+            raise RuntimeError("crash in round 1")
+        return update(self, expert, nominal)
+
+    monkeypatch.setattr(MaximumEntropy, "update", update_then_crash)
+    config = parse_config(yaml.safe_load(CONFIG))
+    with pytest.raises(RuntimeError):
+        run(config, tmp_path / "my_run")
+    with open(tmp_path / "my_run" / "metrics.csv") as f:
+        rows = list(csv.DictReader(f))
+    assert [int(row["round"]) for row in rows] == [0]

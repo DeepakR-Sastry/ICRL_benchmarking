@@ -7,3 +7,5 @@ __pycache__/
 runs/
 .pytest_cache/
 expert_data/
+wandb/
+MUJOCO_LOG.TXT

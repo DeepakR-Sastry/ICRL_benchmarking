@@ -3,7 +3,8 @@
 
 from icrl_bench.agents.ppo import PPO, PPOSettings
 from icrl_bench.agents.ppo_lagrangian import PPOLagrangian, PPOLagrangianSettings
-from icrl_bench.envs import lap_grid_world
+from icrl_bench.envs import half_cheetah_with_pos, lap_grid_world
+from icrl_bench.featurizers import half_cheetah_with_pos as half_cheetah_with_pos_features
 from icrl_bench.featurizers import lap_grid_world as lap_grid_world_features
 from icrl_bench.methods.binary_classifier import BinaryClassifier, BinaryClassifierSettings
 from icrl_bench.methods.maximum_entropy import MaximumEntropy, MaximumEntropySettings
@@ -11,6 +12,7 @@ from icrl_bench.methods.maximum_entropy import MaximumEntropy, MaximumEntropySet
 # name -> gymnasium env class; config arguments go to its constructor.
 ENVS = {
     "lap_grid_world": lap_grid_world.LapGridWorld,
+    "half_cheetah_with_pos": half_cheetah_with_pos.HalfCheetahWithPos,
 }
 
 # name -> (true_cost(obs, action) -> float, names of the envs it applies to).
@@ -18,11 +20,13 @@ ENVS = {
 # meet its assumptions (docs/decisions.md, 2026-10-21).
 TRUE_COSTS = {
     "lap_grid_world": (lap_grid_world.true_cost, {"lap_grid_world"}),
+    "half_cheetah_with_pos": (half_cheetah_with_pos.true_cost, {"half_cheetah_with_pos"}),
 }
 
 # name -> featurize(trajectory) -> array (steps, features).
 FEATURIZERS = {
     "lap_grid_world": lap_grid_world_features.featurize,
+    "half_cheetah_with_pos": half_cheetah_with_pos_features.featurize,
 }
 
 # name -> (class, settings dataclass).

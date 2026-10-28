@@ -130,15 +130,95 @@ def step_costs(infos, n_envs):
     return costs
 
 
-def collect_rollout(net, envs, obs, episode_starts, n_steps,
+class RunningMeanStd:
+    """Running mean and variance of a stream of batches (SB3 0.9.0
+    common/running_mean_std.py). Starts at mean 0, variance 1, count 1e-4."""
+
+    def __init__(self, shape=()):
+        self.mean = np.zeros(shape, np.float64)
+        self.var = np.ones(shape, np.float64)
+        self.count = 1e-4
+
+    def update(self, batch):
+        """Merge a batch (first axis = samples) into the running statistics."""
+        batch_mean, batch_var, batch_count = np.mean(batch, axis=0), np.var(batch, axis=0), batch.shape[0]
+        delta = batch_mean - self.mean
+        total = self.count + batch_count
+        self.mean = self.mean + delta * batch_count / total
+        m_2 = self.var * self.count + batch_var * batch_count + np.square(delta) * self.count * batch_count / total
+        self.var = m_2 / total
+        self.count = total
+
+
+class Normalizer:
+    """Malik's VecNormalizeWithCost (SB3 0.9.0 fork, common/vec_env/
+    vec_normalize.py), moved inside the agent (docs/decisions.md,
+    2026-10-24). Each switch off = numbers passed through unchanged.
+
+    Observations: (obs - mean) / std, clipped to ±10. Rewards and costs:
+    divided by the std of a running discounted return (mean not
+    subtracted), clipped to ±10. Statistics change only in reset() and
+    step(); normalize_obs() alone (used by policy) never changes them."""
+
+    CLIP, EPSILON = 10.0, 1e-8
+
+    def __init__(self, obs_shape, normalize_obs, normalize_reward, normalize_cost, reward_gamma, cost_gamma):
+        self.normalize_obs_on = normalize_obs
+        self.normalize_reward_on = normalize_reward
+        self.normalize_cost_on = normalize_cost
+        self.reward_gamma, self.cost_gamma = reward_gamma, cost_gamma
+        self.obs_rms = RunningMeanStd(obs_shape)
+        self.reward_rms = RunningMeanStd()
+        self.cost_rms = RunningMeanStd()
+
+    def reset(self, n_envs):
+        """Start of train(): every env copy restarts its episode. As Malik's
+        reset(), the return statistics also take in one 0 per copy."""
+        self.reward_return = np.zeros(n_envs)
+        self.cost_return = np.zeros(n_envs)
+        self.reward_rms.update(self.reward_return)
+        self.cost_rms.update(self.cost_return)
+
+    def normalize_obs(self, obs):
+        if not self.normalize_obs_on:
+            return obs
+        return np.clip((obs - self.obs_rms.mean) / np.sqrt(self.obs_rms.var + self.EPSILON),
+                       -self.CLIP, self.CLIP)
+
+    def step(self, obs, rewards, costs, dones):
+        """Update the statistics with one step of every copy, then rescale it
+        (Malik's step_wait: obs first, then reward, then cost). dones: the
+        copies whose episode ended; their running returns restart at 0."""
+        self.obs_rms.update(obs)
+        obs = self.normalize_obs(obs)
+        rewards = self._normalize_return(rewards, "reward_return", self.reward_gamma,
+                                         self.reward_rms, self.normalize_reward_on, dones)
+        costs = self._normalize_return(costs, "cost_return", self.cost_gamma,
+                                       self.cost_rms, self.normalize_cost_on, dones)
+        return obs, rewards, costs
+
+    def _normalize_return(self, values, return_name, gamma, rms, on, dones):
+        running_return = getattr(self, return_name) * gamma + values
+        rms.update(running_return)
+        running_return[dones] = 0
+        setattr(self, return_name, running_return)
+        if not on:
+            return values
+        return np.clip(values / np.sqrt(rms.var + self.EPSILON), -self.CLIP, self.CLIP)
+
+
+def collect_rollout(net, normalizer, envs, obs, episode_starts, n_steps,
                     reward_gamma, reward_gae_lambda, cost_gamma, cost_gae_lambda):
     """Run the policy for n_steps in every env copy and compute GAE for reward
     and for cost (SB3 0.9.0 common/on_policy_algorithm.py
     OnPolicyWithCostAlgorithm.collect_rollouts).
 
     envs: gymnasium vector env with autoreset_mode=SAME_STEP, each copy
-    wrapped in CostWrapper. obs and episode_starts are where the previous
-    rollout stopped (envs are not reset between rollouts). Returns (rollout,
+    wrapped in CostWrapper. normalizer rescales each step as it comes in;
+    the rollout keeps the rescaled observations, rewards and costs (what
+    the networks learn from) plus "raw_costs" (for λ). obs (rescaled) and
+    episode_starts are where the previous rollout stopped (envs are not
+    reset between rollouts). Returns (rollout,
     obs, episode_starts): rollout is a dict of arrays, each (n_steps, n_envs,
     ...), plus "episode_returns": the total reward of each episode that
     finished during the rollout (needs each env copy wrapped in gymnasium's
@@ -146,7 +226,7 @@ def collect_rollout(net, envs, obs, episode_starts, n_steps,
     are where the next rollout continues."""
     device = next(net.parameters()).device
     action_space = envs.single_action_space
-    rollout = {key: [] for key in ["observations", "actions", "rewards", "costs", "episode_starts",
+    rollout = {key: [] for key in ["observations", "actions", "rewards", "costs", "raw_costs", "episode_starts",
                                    "reward_values", "cost_values", "log_probs"]}
     episode_returns = []
 
@@ -165,7 +245,9 @@ def collect_rollout(net, envs, obs, episode_starts, n_steps,
         if isinstance(action_space, spaces.Box):
             env_actions = np.clip(actions, action_space.low, action_space.high)
         new_obs, rewards, terminated, truncated, infos = envs.step(env_actions)
-        costs = step_costs(infos, envs.num_envs)
+        raw_costs = step_costs(infos, envs.num_envs)
+        dones = np.logical_or(terminated, truncated)
+        new_obs, rewards, costs = normalizer.step(new_obs, rewards, raw_costs, dones)
         # With SAME_STEP resets, a finished episode's info is under "final_info".
         final = infos.get("final_info", {})
         if "episode" in final:
@@ -175,6 +257,7 @@ def collect_rollout(net, envs, obs, episode_starts, n_steps,
         rollout["actions"].append(actions)
         rollout["rewards"].append(rewards)
         rollout["costs"].append(costs)
+        rollout["raw_costs"].append(raw_costs)
         rollout["episode_starts"].append(episode_starts)
         rollout["reward_values"].append(reward_values.cpu().numpy())
         rollout["cost_values"].append(cost_values.cpu().numpy())
@@ -182,10 +265,10 @@ def collect_rollout(net, envs, obs, episode_starts, n_steps,
 
         obs = new_obs
         # A time-limit cutoff counts as a true end, as in SB3 0.9.0.
-        episode_starts = np.logical_or(terminated, truncated).astype(np.float32)
+        episode_starts = dones.astype(np.float32)
 
     rollout = {key: np.stack(arrays) for key, arrays in rollout.items()}
-    for key in ["rewards", "costs", "episode_starts", "reward_values", "cost_values", "log_probs"]:
+    for key in ["rewards", "costs", "raw_costs", "episode_starts", "reward_values", "cost_values", "log_probs"]:
         rollout[key] = rollout[key].astype(np.float32)
 
     # Malik's SB3 0.9.0 bootstraps the last step with the leftover values =
@@ -337,6 +420,11 @@ class PPOLagrangianSettings:
     penalty_initial_value: float = 1.0
     penalty_learning_rate: float = 0.1
     budget: float = 0.0
+    # Malik's VecNormalizeWithCost switches. His CLI default is on; ours is
+    # off so LapGridWorld configs keep their meaning (decisions.md 2026-10-24).
+    normalize_obs: bool = False
+    normalize_reward: bool = False
+    normalize_cost: bool = False
     seed: int = 0
     device: str = "cpu"
 
@@ -358,9 +446,11 @@ class PPOLagrangian:
         # One Adam over all three networks; eps=1e-5 (SB3 ActorCriticPolicy).
         self.optimizer = torch.optim.Adam(self.net.parameters(), lr=s.learning_rate, eps=1e-5)
         self.lagrange = LagrangeMultiplier(s.penalty_initial_value, s.penalty_learning_rate, s.budget)
+        self.normalizer = Normalizer(observation_space.shape, s.normalize_obs, s.normalize_reward,
+                                     s.normalize_cost, s.reward_gamma, s.cost_gamma)
         self.envs_seeded = False
 
-    def train(self, envs, total_steps):
+    def train(self, envs, total_steps, callback=None):
         """Alternate collecting a rollout, updating the networks with the
         current λ, and updating λ from the rollout's average cost, until at
         least total_steps env steps (all copies together) have been taken
@@ -370,17 +460,23 @@ class PPOLagrangian:
 
         Resets envs on every call, as Malik's ICRL loop does (learn's default
         reset_num_timesteps=True); the seed is used on the first call only.
-        λ carries over between calls. Returns one dict per rollout."""
+        λ carries over between calls. Returns one dict per rollout;
+        callback, if given, is also called with each dict as soon as its
+        rollout is done (SB3's callbacks; lets long runs save as they go)."""
         s = self.settings
         obs, _ = envs.reset(seed=None if self.envs_seeded else s.seed)
         self.envs_seeded = True
+        # The statistics carry over between calls, like λ. Reset observations
+        # are rescaled but not added to them (Malik's VecNormalize.reset).
+        self.normalizer.reset(envs.num_envs)
+        obs = self.normalizer.normalize_obs(obs)
         episode_starts = np.zeros(envs.num_envs, dtype=np.float32)
         recent_returns = deque(maxlen=100)  # SB3's ep_info_buffer
         log = []
         steps = 0
         while steps < total_steps:
             rollout, obs, episode_starts = collect_rollout(
-                self.net, envs, obs, episode_starts, s.n_steps,
+                self.net, self.normalizer, envs, obs, episode_starts, s.n_steps,
                 s.reward_gamma, s.reward_gae_lambda, s.cost_gamma, s.cost_gae_lambda)
             steps += s.n_steps * envs.num_envs
             penalty = self.lagrange.value
@@ -389,18 +485,24 @@ class PPOLagrangian:
                 s.clip_range, s.ent_coef, s.reward_vf_coef, s.cost_vf_coef,
                 s.max_grad_norm, s.target_kl)
             # Mean per-step raw cost over the whole rollout (Malik: orig_costs).
-            average_cost = float(np.mean(rollout["costs"]))
+            average_cost = float(np.mean(rollout["raw_costs"]))
             self.lagrange.update(average_cost)
             recent_returns.extend(rollout["episode_returns"].tolist())
             ep_rew_mean = float(np.mean(recent_returns)) if recent_returns else float("nan")
             log.append({"steps": steps, "ep_rew_mean": ep_rew_mean, "average_cost": average_cost,
                         "penalty": penalty, **stats})
+            if callback is not None:
+                callback(log[-1])
         return log
 
     def policy(self, obs):
-        """One observation in, one sampled action out (Malik samples
+        """One raw observation in, one sampled action out (Malik samples
         trajectories with deterministic=False); continuous actions are clipped
-        to the action bounds (SB3 BasePolicy.predict)."""
+        to the action bounds (SB3 BasePolicy.predict). The observation is
+        rescaled with the current statistics, which it doesn't change (what
+        Malik's sync_envs_normalization achieves for his sampling and eval
+        envs)."""
+        obs = self.normalizer.normalize_obs(obs)
         with torch.no_grad():
             obs_tensor = torch.as_tensor(obs, device=self.settings.device).unsqueeze(0)
             action = self.net.distribution(obs_tensor).sample()[0].cpu().numpy()

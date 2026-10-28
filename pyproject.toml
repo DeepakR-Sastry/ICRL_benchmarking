@@ -8,14 +8,14 @@ version = "0.1.0"
 description = "Inverse Constraint RL methods and a fair way to compare them."
 requires-python = ">=3.13"
 dependencies = [
-    "gymnasium",
+    "gymnasium[mujoco]",
     "numpy",
     "pyyaml",
     "torch",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = ["matplotlib", "pytest", "wandb"]
 validate = ["stable-baselines3"]
 
 [tool.setuptools.packages.find]
