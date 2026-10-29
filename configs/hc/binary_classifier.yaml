@@ -1,0 +1,39 @@
+# Binary Classifier ICRL on HCWithPos, Malik et al.'s README command (HC-Glag):
+# --train_gail_lambda -nis -er 10 -ep icrl/expert_data/HCWithPos-New -tk 0.01
+# -cl 30 -bi 10 -ft 2e5 -ni 30 -tei HCWithPos-v0 -eei HCWithPosTest-v0
+# -clr 0.05 -aclr 0.9 -crc 0.5 -psis -ctkno 2.5
+# -crc, -psis and -ctkno are not set: his code ignores them in this branch
+# (regulariser fixed at 0; -nis turns off importance sampling, which -psis and
+# -ctkno belong to). -aclr does apply. Unset = his CLI defaults (icrl/icrl.py
+# argparse), which our settings' defaults already are, except normalisation.
+nominal_env: {name: half_cheetah_with_pos}                  # -tei HCWithPos-v0
+eval_env: {name: half_cheetah_with_pos, constrained: true}  # -eei HCWithPosTest-v0
+true_cost: {name: half_cheetah_with_pos}
+featurizer: {name: half_cheetah_with_pos}
+expert: expert_data/hc_malik.pkl            # -er 10 -ep; made by scripts/make_hc_malik_expert.py
+n_envs: 5                                   # -nt default 5
+agent:
+  name: ppo_lagrangian
+  target_kl: 0.01                           # -tk
+  # No -dno/-dnr/-dnc in his command, so his VecNormalizeWithCost
+  # normalises all three (our default is off; decisions.md 2026-10-24).
+  normalize_obs: true
+  normalize_reward: true
+  normalize_cost: true
+method:
+  name: binary_classifier
+  hidden_sizes: [30]                        # -cl 30
+  learning_rate: 0.05                       # -clr
+  anneal_lr_by_factor: 0.9                  # -aclr
+  backward_iters: 10                        # -bi
+  # The network sees obs columns 0-17 then obs columns 0-5 again, not the
+  # actions, as Malik's does by a bug (docs/methods.md, "Bugs in the
+  # official code" (2)). Featurizer columns: 0-17 obs, 18-23 action.
+  input_columns: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
+                  0, 1, 2, 3, 4, 5]
+loop:
+  # -ni 30 in his README; 60 here, as our Maximum Entropy comparison
+  # (decisions.md 2026-10-28, 2026-10-29). Rounds 0-29 are unchanged by this.
+  n_rounds: 60
+  steps_per_round: 200000                   # -ft 2e5
+seed: 0
