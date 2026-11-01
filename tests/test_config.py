@@ -2,8 +2,8 @@ import pytest
 import yaml
 
 from icrl_bench.agents.ppo_lagrangian import PPOLagrangianSettings
-from icrl_bench.config import load_config, parse_config, save_config
-from icrl_bench.core.loop import ICRLLoopSettings
+from icrl_bench.config import Named, load_config, parse_config, save_config
+from icrl_bench.core.loop import GACLLoopSettings, ICRLLoopSettings
 from icrl_bench.methods.maximum_entropy import MaximumEntropySettings
 
 TEXT = """
@@ -36,7 +36,8 @@ def test_reads_the_settings_validate_icrl_lgw_uses(tmp_path):
     # Lists become tuples, as the dataclass fields are typed.
     assert config.method.args == MaximumEntropySettings(
         hidden_sizes=(20,), learning_rate=0.003, backward_iters=20, input_columns=(0, 0, 1), seed=3)
-    assert config.loop == ICRLLoopSettings(n_rounds=12, steps_per_round=10_000, seed=3)
+    # No loop name: the ICRL loop (docs/decisions.md, 2026-11-01).
+    assert config.loop == Named("icrl", ICRLLoopSettings(n_rounds=12, steps_per_round=10_000, seed=3))
 
 
 @pytest.mark.parametrize("changes, message", [
@@ -49,6 +50,10 @@ def test_reads_the_settings_validate_icrl_lgw_uses(tmp_path):
     (dict(method={"name": "maximum_entropy", "importance_sampling": "false"}), "is text"),
     (dict(nominal_env={"name": "lap_grid_world", "constrained": "False"}), "is text"),
     (dict(featurizer={"name": "lap_grid_world", "scale": 2}), "take no arguments"),
+    (dict(loop={"name": "gail"}), "is not one of"),
+    (dict(loop={"name": "gacl", "n_rounds": 12}), "unknown setting 'n_rounds'"),
+    (dict(method={"name": "gacl"}), "does not run in loop 'icrl'"),
+    (dict(loop={"name": "gacl"}), "does not run in loop 'gacl'"),
 ])
 def test_mistakes_are_refused(changes, message):
     with pytest.raises(ValueError, match=message):
@@ -76,4 +81,13 @@ def test_a_seed_override_reaches_every_settings_block(tmp_path):
     path = tmp_path / "config.yaml"
     path.write_text(TEXT)
     config = load_config(path, seed=7)
-    assert config.seed == config.agent.args.seed == config.method.args.seed == config.loop.seed == 7
+    assert config.seed == config.agent.args.seed == config.method.args.seed == config.loop.args.seed == 7
+
+
+def test_a_named_loop_gets_its_own_settings_and_is_saved_by_name(tmp_path):
+    config = parse_config(raw(agent={"name": "ppo"}, method={"name": "gacl"},
+                              loop={"name": "gacl", "total_steps": 120000}))
+    assert config.loop == Named("gacl", GACLLoopSettings(total_steps=120_000, seed=3))
+    save_config(config, tmp_path / "saved.yaml")
+    assert yaml.safe_load((tmp_path / "saved.yaml").read_text())["loop"]["name"] == "gacl"
+    assert load_config(tmp_path / "saved.yaml") == config

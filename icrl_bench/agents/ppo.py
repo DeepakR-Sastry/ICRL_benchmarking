@@ -152,13 +152,30 @@ def collect_rollout(net, envs, obs, episode_starts, n_steps, gamma, gae_lambda):
 
     # Malik's SB3 0.9.0 bootstraps the last step with the leftover `values` =
     # V(last stored obs), not V(obs). See "Known differences" in docs/agents.md.
+    # Kept so the advantages can be recomputed after the rewards change
+    # (Malik's `self.extras`, added to his SB3 for GACL).
+    rollout["last_value"] = values.cpu().numpy()
+    rollout["last_done"] = episode_starts
     rollout["advantages"], rollout["returns"] = compute_gae(
         rollout["rewards"], rollout["values"], rollout["episode_starts"],
-        last_value=values.cpu().numpy(), last_done=episode_starts,
+        last_value=rollout["last_value"], last_done=rollout["last_done"],
         gamma=gamma, gae_lambda=gae_lambda,
     )
     rollout["episode_returns"] = np.array(episode_returns, dtype=np.float32)
     return rollout, obs, episode_starts
+
+
+def apply_reward_hook(rollout, reward_hook, gamma, gae_lambda):
+    """Add reward_hook(observations, actions) to a collected rollout's
+    rewards and recompute its advantages and returns, in place (Malik's
+    GailCallback.on_rollout_end: rewards += log D, then
+    compute_returns_and_advantage again)."""
+    extra = reward_hook(rollout["observations"], rollout["actions"])
+    assert extra.shape == rollout["rewards"].shape
+    rollout["rewards"] += extra  # in place: stays float32, as SB3's buffer
+    rollout["advantages"], rollout["returns"] = compute_gae(
+        rollout["rewards"], rollout["values"], rollout["episode_starts"],
+        rollout["last_value"], rollout["last_done"], gamma, gae_lambda)
 
 
 def ppo_update(net, optimizer, rollout, n_epochs, batch_size, clip_range,
@@ -261,15 +278,23 @@ class PPO:
         self.optimizer = torch.optim.Adam(self.net.parameters(), lr=self.settings.learning_rate, eps=1e-5)
         self.envs_seeded = False
 
-    def train(self, envs, total_steps):
+    def train(self, envs, total_steps, callback=None, reward_hook=None):
         """Alternate collecting a rollout and updating, until at least
         total_steps env steps (all copies together) have been taken (SB3
         OnPolicyAlgorithm.learn). envs: gymnasium vector env,
         autoreset_mode=SAME_STEP, each copy wrapped in RecordEpisodeStatistics.
 
+        reward_hook(observations, actions) -> extra rewards, all
+        (n_steps, n_envs, ...): called after each rollout is collected and
+        before the update; its result is added to the rollout's rewards and
+        the advantages are recomputed (Malik's GailCallback.on_rollout_end).
+        Logged ep_rew_mean stays the env's own reward.
+
         Resets envs on every call, as Malik's ICRL loop does (learn's default
         reset_num_timesteps=True); the seed is used on the first call only.
-        Returns one dict per rollout for logging."""
+        Returns one dict per rollout for logging; callback, if given, is
+        also called with each dict as soon as its rollout's update is done
+        (as PPOLagrangian.train's)."""
         s = self.settings
         obs, _ = envs.reset(seed=None if self.envs_seeded else s.seed)
         self.envs_seeded = True
@@ -281,12 +306,16 @@ class PPO:
             rollout, obs, episode_starts = collect_rollout(
                 self.net, envs, obs, episode_starts, s.n_steps, s.gamma, s.gae_lambda)
             steps += s.n_steps * envs.num_envs
+            if reward_hook is not None:
+                apply_reward_hook(rollout, reward_hook, s.gamma, s.gae_lambda)
             stats = ppo_update(
                 self.net, self.optimizer, rollout, s.n_epochs, s.batch_size, s.clip_range,
                 s.ent_coef, s.vf_coef, s.max_grad_norm, s.target_kl)
             recent_returns.extend(rollout["episode_returns"].tolist())
             ep_rew_mean = float(np.mean(recent_returns)) if recent_returns else float("nan")
             log.append({"steps": steps, "ep_rew_mean": ep_rew_mean, **stats})
+            if callback is not None:
+                callback(log[-1])
         return log
 
     def policy(self, obs):

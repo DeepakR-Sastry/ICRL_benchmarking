@@ -6,8 +6,8 @@ from dataclasses import asdict, dataclass, fields, is_dataclass
 
 import yaml
 
-from icrl_bench.core.loop import ICRLLoopSettings
-from icrl_bench.registry import AGENTS, ENVS, FEATURIZERS, METHODS, TRUE_COSTS, check_true_cost_fits
+from icrl_bench.registry import (AGENTS, ENVS, FEATURIZERS, LOOPS, METHODS, TRUE_COSTS, check_method_fits_loop,
+                                 check_true_cost_fits)
 
 KEYS = {"nominal_env", "eval_env", "true_cost", "featurizer", "expert", "n_envs",
         "agent", "method", "loop", "seed"}
@@ -16,7 +16,7 @@ KEYS = {"nominal_env", "eval_env", "true_cost", "featurizer", "expert", "n_envs"
 @dataclass(frozen=True)
 class Named:
     """A box chosen by registry name. args: keyword arguments (envs, true
-    costs, featurizers) or a settings dataclass (agents, methods)."""
+    costs, featurizers) or a settings dataclass (agents, methods, loop)."""
     name: str
     args: object
 
@@ -31,7 +31,7 @@ class Config:
     n_envs: int
     agent: Named
     method: Named
-    loop: ICRLLoopSettings
+    loop: Named  # name defaults to "icrl" (docs/decisions.md, 2026-11-01)
     seed: int
 
 
@@ -59,13 +59,14 @@ def parse_config(raw):
         n_envs=raw["n_envs"],
         agent=_named(raw["agent"], AGENTS, "agent", seed),
         method=_named(raw["method"], METHODS, "method", seed),
-        loop=_settings(ICRLLoopSettings, raw["loop"], seed, "loop"),
+        loop=_named({"name": "icrl", **raw["loop"]}, LOOPS, "loop", seed),
         seed=seed,
     )
     if config.featurizer.args:
         raise ValueError("featurizer: plain-function featurizers take no arguments")
     for env in (config.nominal_env, config.eval_env):
         check_true_cost_fits(config.true_cost.name, env.name)
+    check_method_fits_loop(config.loop.name, config.method.name)
     return config
 
 
@@ -78,16 +79,15 @@ def save_config(config, path):
         return {k: list(v) if isinstance(v, tuple) else v for k, v in values.items()}
 
     raw = {f.name: getattr(config, f.name) for f in fields(config)}  # Config's order
-    for key in ("nominal_env", "eval_env", "true_cost", "featurizer", "agent", "method"):
+    for key in ("nominal_env", "eval_env", "true_cost", "featurizer", "agent", "method", "loop"):
         raw[key] = {"name": raw[key].name, **block(raw[key].args)}
-    raw["loop"] = block(raw["loop"])
     with open(path, "w") as f:
         yaml.safe_dump(raw, f, sort_keys=False)
 
 
 def _named(block, registry, where, seed=None):
-    """{name: ..., rest} -> Named. With a seed, the registry holds (class,
-    settings dataclass) and the rest becomes that dataclass."""
+    """{name: ..., rest} -> Named. With a seed, the registry entry's second
+    item is a settings dataclass and the rest becomes that dataclass."""
     block = dict(block)
     name = block.pop("name", None)
     if name not in registry:
@@ -95,7 +95,7 @@ def _named(block, registry, where, seed=None):
     if seed is None:
         _check_no_numbers_or_booleans_as_text(block, where)
         return Named(name, block)
-    _, settings_cls = registry[name]
+    settings_cls = registry[name][1]
     return Named(name, _settings(settings_cls, block, seed, where))
 
 

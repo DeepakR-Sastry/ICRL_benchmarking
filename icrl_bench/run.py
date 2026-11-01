@@ -1,19 +1,20 @@
 """From a checked Config to a finished run: build every box, then run the
-ICRL loop (docs/design.md, "One entry point")."""
+loop the config names (docs/design.md, "One entry point")."""
 
 import csv
+import inspect
 from functools import partial
 from pathlib import Path
 
 from icrl_bench.config import save_config
-from icrl_bench.core.loop import run_icrl
 from icrl_bench.core.vector_env import make_vector_env
 from icrl_bench.data.piles import load_pile
-from icrl_bench.registry import AGENTS, ENVS, FEATURIZERS, METHODS, TRUE_COSTS
+from icrl_bench.registry import AGENTS, ENVS, FEATURIZERS, LOOPS, METHODS, TRUE_COSTS
 
 
 def build(config):
-    """Config -> the keyword arguments of run_icrl except settings.
+    """Config -> every box a loop may need, by its argument name (each loop
+    takes the ones it uses; run_icrl takes them all).
 
     Builds in the order scripts/validate_icrl_lgw.py does (expert, envs,
     agent, method): each constructor reseeds torch, so the order changes
@@ -31,7 +32,7 @@ def build(config):
     featurize = FEATURIZERS[config.featurizer.name]
 
     expert, _ = load_pile(config.expert)
-    # No cost yet: run_icrl sets the learned cost before the first step.
+    # No cost yet: each loop sets its copies' cost before the first step.
     envs = make_vector_env(make_nominal_env, config.n_envs, None)
     agent_cls, _ = AGENTS[config.agent.name]
     agent = agent_cls(envs.single_observation_space, envs.single_action_space, config.agent.args)
@@ -45,12 +46,12 @@ def build(config):
 
 
 def run(config, run_dir, callback=None):
-    """Build every box, run the ICRL loop, and write the run folder:
-    config.yaml (every setting, defaults filled in) and metrics.csv (one
-    row per round, written as soon as the round ends, so a crash keeps
-    every finished round). Refuses a folder that already holds a run, so results
+    """Build every box, run the loop the config names (LOOPS), and write the
+    run folder: config.yaml (every setting, defaults filled in) and
+    metrics.csv (one row per round, or per rollout for GACL, written as
+    soon as it ends, so a crash keeps every finished row). Refuses a folder that already holds a run, so results
     are never overwritten. callback, if given, is called with each row
-    after it is written (e.g. to log to wandb). Returns the per-round log."""
+    after it is written (e.g. to log to wandb). Returns the loop's log."""
     run_dir = Path(run_dir)
     if (run_dir / "config.yaml").exists():
         raise FileExistsError(f"{run_dir} already holds a run")
@@ -71,4 +72,7 @@ def run(config, run_dir, callback=None):
             if callback is not None:
                 callback(row)
 
-        return run_icrl(**build(config), settings=config.loop, callback=write_row)
+        loop_fn, _, _ = LOOPS[config.loop.name]
+        accepted = inspect.signature(loop_fn).parameters
+        boxes = {k: v for k, v in build(config).items() if k in accepted}
+        return loop_fn(**boxes, settings=config.loop.args, callback=write_row)

@@ -3,10 +3,12 @@
 
 from icrl_bench.agents.ppo import PPO, PPOSettings
 from icrl_bench.agents.ppo_lagrangian import PPOLagrangian, PPOLagrangianSettings
+from icrl_bench.core.loop import GACLLoopSettings, ICRLLoopSettings, run_gacl, run_icrl
 from icrl_bench.envs import half_cheetah_with_pos, lap_grid_world
 from icrl_bench.featurizers import half_cheetah_with_pos as half_cheetah_with_pos_features
 from icrl_bench.featurizers import lap_grid_world as lap_grid_world_features
 from icrl_bench.methods.binary_classifier import BinaryClassifier, BinaryClassifierSettings
+from icrl_bench.methods.gacl import GACL, GACLSettings
 from icrl_bench.methods.maximum_entropy import MaximumEntropy, MaximumEntropySettings
 
 # name -> gymnasium env class; config arguments go to its constructor.
@@ -38,6 +40,17 @@ AGENTS = {
 METHODS = {
     "maximum_entropy": (MaximumEntropy, MaximumEntropySettings),
     "binary_classifier": (BinaryClassifier, BinaryClassifierSettings),
+    "gacl": (GACL, GACLSettings),
+}
+
+# name -> (loop function, settings dataclass, names of the methods it runs).
+# A config's loop block names one (default "icrl"). A method in the wrong
+# loop can run without error but be a different algorithm (GACL has a
+# cost, so run_icrl would accept it), so each loop lists its methods
+# (docs/decisions.md, 2026-11-01).
+LOOPS = {
+    "icrl": (run_icrl, ICRLLoopSettings, {"maximum_entropy", "binary_classifier"}),
+    "gacl": (run_gacl, GACLLoopSettings, {"gacl"}),
 }
 
 
@@ -48,3 +61,11 @@ def check_true_cost_fits(true_cost_name, env_name):
     if env_name not in env_names:
         raise ValueError(f"true cost {true_cost_name!r} does not apply to env {env_name!r} "
                          f"(it applies to: {sorted(env_names)})")
+
+
+def check_method_fits_loop(loop_name, method_name):
+    """Raise if the method is not listed for this loop."""
+    _, _, method_names = LOOPS[loop_name]
+    if method_name not in method_names:
+        raise ValueError(f"method {method_name!r} does not run in loop {loop_name!r} "
+                         f"(it runs: {sorted(method_names)})")

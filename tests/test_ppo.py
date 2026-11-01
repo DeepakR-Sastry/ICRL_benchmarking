@@ -6,7 +6,8 @@ from gymnasium.vector import AutoresetMode, SyncVectorEnv
 from gymnasium.wrappers import RecordEpisodeStatistics
 from torch.distributions import Normal
 
-from icrl_bench.agents.ppo import PPO, ActorCritic, PPOSettings, collect_rollout, compute_gae, ppo_update
+from icrl_bench.agents.ppo import (PPO, ActorCritic, PPOSettings, apply_reward_hook, collect_rollout,
+                                   compute_gae, ppo_update)
 from icrl_bench.core.cost_wrapper import CostWrapper
 from icrl_bench.envs.lap_grid_world import LapGridWorld, true_cost
 
@@ -200,6 +201,52 @@ def test_same_seed_same_training():
         agent = PPO(spaces.Box(-1.0, 1.0, shape=(1,)), spaces.Discrete(2), PPOSettings(n_steps=256))
         logs.append(agent.train(recorded_lgw_envs(2), total_steps=1024))
     assert logs[0] == logs[1]
+
+
+def test_callback_gets_each_row_as_it_is_logged():
+    rows = []
+    agent = PPO(spaces.Box(-1.0, 1.0, shape=(1,)), spaces.Discrete(2), PPOSettings(n_steps=256))
+    log = agent.train(recorded_lgw_envs(2), total_steps=1024, callback=rows.append)
+    assert [row["steps"] for row in rows] == [512, 1024]
+    assert rows == log
+
+
+def test_reward_hook_returning_zeros_changes_nothing():
+    logs = []
+    for hook in [None, lambda obs, acs: np.zeros(acs.shape[:2], dtype=np.float32)]:
+        agent = PPO(spaces.Box(-1.0, 1.0, shape=(1,)), spaces.Discrete(2), PPOSettings(n_steps=256))
+        logs.append(agent.train(recorded_lgw_envs(2), total_steps=1024, reward_hook=hook))
+    assert logs[0] == logs[1]
+
+
+def test_reward_hook_shifts_rewards_and_advantages_follow():
+    # 4 steps x 2 copies; the hook adds +1 to every step.
+    envs, obs = lgw_envs(2)
+    net = ActorCritic(envs.single_observation_space, envs.single_action_space)
+    rollout, _, _ = collect_rollout(net, envs, obs, np.zeros(2, dtype=np.float32), 4, 0.99, 0.95)
+    old_rewards, old_advantages = rollout["rewards"].copy(), rollout["advantages"].copy()
+    expected_advantages, expected_returns = compute_gae(
+        old_rewards + 1, rollout["values"], rollout["episode_starts"],
+        rollout["last_value"], rollout["last_done"], 0.99, 0.95)
+
+    apply_reward_hook(rollout, lambda obs, acs: np.ones(acs.shape, dtype=np.float32), 0.99, 0.95)
+    assert np.array_equal(rollout["rewards"], old_rewards + 1)
+    assert rollout["rewards"].dtype == np.float32
+    assert np.array_equal(rollout["advantages"], expected_advantages)
+    assert np.array_equal(rollout["returns"], expected_returns)
+    assert not np.allclose(rollout["advantages"], old_advantages)
+
+
+def test_train_calls_the_reward_hook_once_per_rollout():
+    seen = []
+
+    def hook(obs, acs):
+        seen.append((obs.shape, acs.shape))
+        return np.zeros(acs.shape, dtype=np.float32)
+
+    agent = PPO(spaces.Box(-1.0, 1.0, shape=(1,)), spaces.Discrete(2), PPOSettings(n_steps=256))
+    agent.train(recorded_lgw_envs(2), total_steps=1024, reward_hook=hook)
+    assert seen == [((256, 2, 1), (256, 2))] * 2
 
 
 def test_policy_returns_one_env_action():

@@ -2,7 +2,11 @@
 nominal trajectories, backward step (method updates the constraint).
 
 Follows Malik et al.'s icrl/icrl.py (github.com/shehryar-malik/icrl, commit
-f28214e), cited where each piece is used. Order and design: docs/design.md."""
+f28214e), cited where each piece is used. Order and design: docs/design.md.
+
+GACL has its own loop, run_gacl (Malik's icrl/gail.py): one training run in
+which the method is updated after every rollout (docs/decisions.md,
+2026-11-01)."""
 
 from dataclasses import dataclass
 
@@ -86,4 +90,84 @@ def run_icrl(agent, envs, method, featurize, expert, make_nominal_env, make_eval
         })
         if callback is not None:
             callback(log[-1])
+    return log
+
+
+@dataclass
+class GACLLoopSettings:
+    """Defaults: Malik's CLI defaults (icrl/gail.py argparse, SB3
+    EvalCallback). Per-env values live in configs."""
+    total_steps: int = 1_000_000  # -t, agent steps in the one training run
+    eval_every: int = 2048  # -ee, in vector-env steps (all copies step together)
+    n_eval_episodes: int = 5  # EvalCallback default
+    seed: int = 0
+
+
+def run_gacl(agent, envs, method, featurize, expert, make_eval_env, true_cost,
+             settings=None, callback=None):
+    """Malik's GACL (gail.py L189-191 + GailCallback): one agent.train run;
+    after each rollout the method is updated on that rollout and its log D
+    is added to the rollout's rewards (agent.train's reward_hook).
+
+    agent: has train(envs, steps, callback, reward_hook) and policy(obs).
+    envs: the agent's vector env; its cost is set to zero and never read. expert:
+    list[Trajectory]. make_eval_env builds the constrained env, once.
+    true_cost: used for grading only. Returns one metrics dict per rollout;
+    callback, if given, is also called with each dict as soon as it is
+    complete."""
+    s = settings or GACLLoopSettings()
+    # Malik's GACL envs have no cost wrapper; ours carry a zero cost, which
+    # PPO never reads (each loop sets its copies' cost first, as run_icrl).
+    envs.call("set_cost_fn", lambda obs, action: 0.0)
+    n_envs = envs.num_envs
+    eval_env = make_eval_env()
+    pending = {}  # the hook's metrics, waiting for the PPO update's row
+    log = []
+    n_evaluations = 0
+
+    def hook(observations, actions):
+        # GailCallback._on_rollout_end. Step-major order, as his flatten:
+        # (step 0, env 0), (step 0, env 1), ...; quirk A keeps the first rows.
+        n_steps = actions.shape[0]
+        steps = [Step(observations[t, e], actions[t, e], reward=0.0)
+                 for t in range(n_steps) for e in range(n_envs)]
+        nominal = Trajectory(steps)
+        features = featurize(nominal)
+        # Both piles featurized each time, so they always use the same
+        # featurizer state (as run_icrl, docs/decisions.md 2026-10-19).
+        backward = method.update([featurize(t) for t in expert], [features])
+        pending.clear()
+        pending.update({f"backward/{k}": v for k, v in backward.items()})
+        # His eval/mean_cost: true cost per step of this training rollout.
+        pending["true/cost"] = true_cost_rate([nominal], true_cost)
+        # Rewards from the updated D (his reward_function after train).
+        return method.reward(features).reshape(n_steps, n_envs)
+
+    def on_row(row):
+        # His EvalCallback evaluates when its call count (one per vector
+        # step) hits a multiple of eval_every, i.e. during a rollout, with
+        # the policy of the last update. So after this update, evaluate if
+        # the next rollout would contain such a step and training goes on.
+        nonlocal n_evaluations
+        done = row["steps"] // n_envs  # vector steps so far
+        next_end = done + done // (len(log) + 1)  # + one rollout's vector steps
+        reward_mean = reward_std = float("nan")
+        if row["steps"] < s.total_steps and next_end // s.eval_every > done // s.eval_every:
+            # The eval env is seeded at its first use only, as in run_icrl.
+            seed = s.seed if n_evaluations == 0 else None
+            evaluation = rollout(eval_env, agent.policy, s.n_eval_episodes, seed)
+            reward_mean, reward_std = reward_stats(evaluation)
+            n_evaluations += 1
+        log.append({
+            "rollout": len(log),
+            "timesteps": row["steps"],
+            "true/reward": reward_mean,
+            "true/reward_std": reward_std,
+            **pending,
+            **{f"forward/{k}": v for k, v in row.items()},
+        })
+        if callback is not None:
+            callback(log[-1])
+
+    agent.train(envs, s.total_steps, callback=on_row, reward_hook=hook)
     return log

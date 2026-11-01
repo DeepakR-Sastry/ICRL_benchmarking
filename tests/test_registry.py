@@ -1,6 +1,7 @@
 import pytest
 
-from icrl_bench.registry import AGENTS, ENVS, METHODS, TRUE_COSTS, check_true_cost_fits
+from icrl_bench.registry import (AGENTS, ENVS, LOOPS, METHODS, TRUE_COSTS, check_method_fits_loop,
+                                 check_true_cost_fits)
 
 
 def test_every_rule_lists_only_registered_envs():
@@ -23,3 +24,17 @@ def test_every_agent_and_method_builds_from_its_default_settings():
         cls(env.observation_space, env.action_space, settings_cls())
     for cls, settings_cls in METHODS.values():
         cls(3, settings_cls())
+
+
+def test_every_method_runs_in_exactly_one_loop():
+    for name in METHODS:
+        assert sum(name in methods for _, _, methods in LOOPS.values()) == 1, name
+    for _, _, methods in LOOPS.values():
+        assert methods <= set(METHODS)
+
+
+def test_a_method_in_the_wrong_loop_is_refused():
+    check_method_fits_loop("gacl", "gacl")
+    check_method_fits_loop("icrl", "binary_classifier")
+    with pytest.raises(ValueError, match="does not run in loop"):
+        check_method_fits_loop("icrl", "gacl")

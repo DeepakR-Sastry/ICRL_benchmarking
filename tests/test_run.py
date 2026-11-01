@@ -57,7 +57,7 @@ def test_build_makes_the_envs_and_rule_the_config_names():
 
 def test_a_run_built_from_the_config_matches_one_built_by_hand():
     config = parse_config(yaml.safe_load(CONFIG))
-    from_config = run_icrl(**build(config), settings=config.loop)
+    from_config = run_icrl(**build(config), settings=config.loop.args)
     hand = run_icrl(**by_hand(), settings=ICRLLoopSettings(n_rounds=2, steps_per_round=64, n_eval_episodes=2,
                                                            seed=3))
     # assert_equal counts nan == nan (ep_rew_mean is nan: no episode ends in 64 steps).
@@ -94,3 +94,20 @@ def test_run_keeps_finished_rounds_when_a_later_round_crashes(tmp_path, monkeypa
     with open(tmp_path / "my_run" / "metrics.csv") as f:
         rows = list(csv.DictReader(f))
     assert [int(row["round"]) for row in rows] == [0]
+
+
+def test_run_runs_the_loop_the_config_names(tmp_path):
+    # GACL: plain PPO, one training run of 3 rollouts (2 copies x 32 steps).
+    raw = yaml.safe_load(CONFIG)
+    raw["agent"] = {"name": "ppo", "n_steps": 32, "batch_size": 16, "n_epochs": 2}
+    raw["method"] = {"name": "gacl", "hidden_sizes": [20], "learning_rate": 0.01, "input_columns": [0, 0, 1]}
+    raw["loop"] = {"name": "gacl", "total_steps": 192, "eval_every": 32, "n_eval_episodes": 1}
+    config = parse_config(raw)
+    log = run(config, tmp_path / "gacl_run")
+    assert load_config(tmp_path / "gacl_run" / "config.yaml") == config
+    with open(tmp_path / "gacl_run" / "metrics.csv") as f:
+        rows = list(csv.DictReader(f))
+    assert [int(row["rollout"]) for row in rows] == [0, 1, 2]
+    assert float(rows[0]["backward/disc_loss"]) == log[0]["backward/disc_loss"]
+    # Evaluated after updates 1 and 2, not after the last.
+    assert [row["true/reward"] != "nan" for row in rows] == [True, True, False]
