@@ -29,6 +29,8 @@ TRUE_COSTS = {
 FEATURIZERS = {
     "lap_grid_world": lap_grid_world_features.featurize,
     "half_cheetah_with_pos": half_cheetah_with_pos_features.featurize,
+    # Unclipped, as Malik's GAIL discriminator sees it (GACL).
+    "half_cheetah_with_pos_raw": half_cheetah_with_pos_features.featurize_raw,
 }
 
 # name -> (class, settings dataclass).

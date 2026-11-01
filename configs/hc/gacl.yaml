@@ -1,0 +1,35 @@
+# GACL ("GAIL-Constraint") on HCWithPos: Malik et al.'s README command
+# (docs/methods.md §3):
+# run_me.py gail -er 10 -ep icrl/expert_data/HCWithPos-New -tk 0.01 -t 4e6
+# -tei HCWithPos-v0 -eei HCWithPosTest-v0 -dl 30 -dlr 0.003 -lc
+# -lc: log D is added to the reward (what run_gacl does). Unset = his CLI
+# defaults (icrl/gail.py argparse), which our settings' defaults already
+# are, except normalisation (below).
+nominal_env: {name: half_cheetah_with_pos}                  # -tei HCWithPos-v0
+eval_env: {name: half_cheetah_with_pos, constrained: true}  # -eei HCWithPosTest-v0
+true_cost: {name: half_cheetah_with_pos}
+# Unclipped: his discriminator neither clips observations nor actions
+# (docs/decisions.md, 2026-11-01).
+featurizer: {name: half_cheetah_with_pos_raw}
+expert: expert_data/hc_malik.pkl            # -er 10 -ep; made by scripts/make_hc_malik_expert.py
+n_envs: 5                                   # -nt default 5
+agent:
+  name: ppo
+  target_kl: 0.01                           # -tk
+  # No -dno/-dnr in his command, so his VecNormalize normalises both
+  # (our default is off; decisions.md 2026-10-24).
+  normalize_obs: true
+  normalize_reward: true
+method:
+  name: gacl
+  hidden_sizes: [30]                        # -dl 30
+  learning_rate: 0.003                      # -dlr
+  # The discriminator sees obs columns 0-17 then obs columns 0-5 again,
+  # not the actions, as Malik's does by a bug (docs/methods.md, "Bugs in
+  # the official code" (2)). Featurizer columns: 0-17 obs, 18-23 action.
+  input_columns: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
+                  0, 1, 2, 3, 4, 5]
+loop:
+  name: gacl
+  total_steps: 4000000                      # -t 4e6: ~391 rollouts of 5 x 2048 steps
+seed: 0

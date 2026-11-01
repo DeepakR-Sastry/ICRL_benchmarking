@@ -6,8 +6,9 @@ from gymnasium.vector import AutoresetMode, SyncVectorEnv
 from gymnasium.wrappers import RecordEpisodeStatistics
 from torch.distributions import Normal
 
-from icrl_bench.agents.ppo import (PPO, ActorCritic, PPOSettings, apply_reward_hook, collect_rollout,
-                                   compute_gae, ppo_update)
+from icrl_bench.agents.ppo import (PPO, ActorCritic, Normalizer, PPOSettings, apply_reward_hook,
+                                   collect_rollout, compute_gae, ppo_update)
+from icrl_bench.agents.ppo_lagrangian import Normalizer as LagrangianNormalizer
 from icrl_bench.core.cost_wrapper import CostWrapper
 from icrl_bench.envs.lap_grid_world import LapGridWorld, true_cost
 
@@ -69,6 +70,13 @@ def test_gae_ignores_last_value_when_the_rollout_ends_an_episode():
     np.testing.assert_allclose(advantages[0], [1.0, 1.0 + 0.9 * 5.0], rtol=1e-6)
 
 
+def off(envs):
+    """A normaliser with both switches off: numbers pass through unchanged."""
+    normalizer = Normalizer(envs.single_observation_space.shape, False, False, 0.99)
+    normalizer.reset(envs.num_envs)
+    return normalizer
+
+
 def lgw_envs(n_envs):
     envs = SyncVectorEnv([lambda: CostWrapper(LapGridWorld(), true_cost) for _ in range(n_envs)],
                          autoreset_mode=AutoresetMode.SAME_STEP)
@@ -80,7 +88,7 @@ def test_rollout_shapes_and_episode_boundary():
     # LapGridWorld episodes are 200 steps, so step 200 starts a new episode.
     envs, obs = lgw_envs(2)
     net = ActorCritic(envs.single_observation_space, envs.single_action_space)
-    rollout, _, _ = collect_rollout(net, envs, obs, np.zeros(2, np.float32), 250, 0.99, 0.95)
+    rollout, _, _ = collect_rollout(net, off(envs), envs, obs, np.zeros(2, np.float32), 250, 0.99, 0.95)
     assert rollout["observations"].shape == (250, 2, 1)
     assert rollout["actions"].shape == (250, 2)
     for key in ["rewards", "episode_starts", "values", "log_probs", "advantages", "returns"]:
@@ -93,8 +101,8 @@ def test_rollout_shapes_and_episode_boundary():
 def test_next_rollout_continues_where_the_last_stopped():
     envs, obs = lgw_envs(2)
     net = ActorCritic(envs.single_observation_space, envs.single_action_space)
-    first, obs, starts = collect_rollout(net, envs, obs, np.zeros(2, np.float32), 10, 0.99, 0.95)
-    second, _, _ = collect_rollout(net, envs, obs, starts, 10, 0.99, 0.95)
+    first, obs, starts = collect_rollout(net, off(envs), envs, obs, np.zeros(2, np.float32), 10, 0.99, 0.95)
+    second, _, _ = collect_rollout(net, off(envs), envs, obs, starts, 10, 0.99, 0.95)
     np.testing.assert_array_equal(second["observations"][0], obs)
     assert not np.array_equal(second["observations"][0], first["observations"][0])
 
@@ -102,7 +110,7 @@ def test_next_rollout_continues_where_the_last_stopped():
 def test_last_step_bootstraps_with_its_own_value_as_in_malik():
     envs, obs = lgw_envs(2)
     net = ActorCritic(envs.single_observation_space, envs.single_action_space)
-    r, _, last_done = collect_rollout(net, envs, obs, np.zeros(2, np.float32), 10, 0.99, 0.95)
+    r, _, last_done = collect_rollout(net, off(envs), envs, obs, np.zeros(2, np.float32), 10, 0.99, 0.95)
     v = r["values"][-1]  # V(last stored obs), not V(next obs)
     expected = r["rewards"][-1] + 0.99 * v * (1 - last_done) - v
     np.testing.assert_allclose(r["advantages"][-1], expected, rtol=1e-6)
@@ -115,7 +123,7 @@ def test_continuous_rollout_stores_unclipped_actions():
     net = ActorCritic(envs.single_observation_space, envs.single_action_space)
     with torch.no_grad():
         net.log_std.fill_(3.0)  # std ≈ 20, so most samples fall outside [-2, 2]
-    rollout, _, _ = collect_rollout(net, envs, obs, np.zeros(2, np.float32), 20, 0.99, 0.95)
+    rollout, _, _ = collect_rollout(net, off(envs), envs, obs, np.zeros(2, np.float32), 20, 0.99, 0.95)
     assert rollout["actions"].shape == (20, 2, 1)
     assert np.abs(rollout["actions"]).max() > 2.0
 
@@ -223,13 +231,13 @@ def test_reward_hook_shifts_rewards_and_advantages_follow():
     # 4 steps x 2 copies; the hook adds +1 to every step.
     envs, obs = lgw_envs(2)
     net = ActorCritic(envs.single_observation_space, envs.single_action_space)
-    rollout, _, _ = collect_rollout(net, envs, obs, np.zeros(2, dtype=np.float32), 4, 0.99, 0.95)
+    rollout, _, _ = collect_rollout(net, off(envs), envs, obs, np.zeros(2, dtype=np.float32), 4, 0.99, 0.95)
     old_rewards, old_advantages = rollout["rewards"].copy(), rollout["advantages"].copy()
     expected_advantages, expected_returns = compute_gae(
         old_rewards + 1, rollout["values"], rollout["episode_starts"],
         rollout["last_value"], rollout["last_done"], 0.99, 0.95)
 
-    apply_reward_hook(rollout, lambda obs, acs: np.ones(acs.shape, dtype=np.float32), 0.99, 0.95)
+    apply_reward_hook(rollout, lambda obs, acs: np.ones(acs.shape, dtype=np.float32), off(envs), 0.99, 0.95)
     assert np.array_equal(rollout["rewards"], old_rewards + 1)
     assert rollout["rewards"].dtype == np.float32
     assert np.array_equal(rollout["advantages"], expected_advantages)
@@ -258,3 +266,83 @@ def test_policy_returns_one_env_action():
     action = continuous.policy(np.zeros(3, dtype=np.float32))
     assert action.shape == (2,)
     assert np.all(np.abs(action) <= 1.0)
+
+
+def test_normalizer_matches_ppo_lagrangians_with_cost_off():
+    # Our copy must give PPOLagrangian's numbers (checked against Malik's
+    # VecNormalizeWithCost, docs/agents.md) on the same stream of steps.
+    rng = np.random.default_rng(0)
+    ours = Normalizer((3,), True, True, 0.99)
+    theirs = LagrangianNormalizer((3,), True, True, False, 0.99, 0.99)
+    ours.reset(2)
+    theirs.reset(2)
+    for t in range(50):
+        obs, rewards = rng.normal(5, 2, (2, 3)), rng.normal(1, 3, 2)
+        dones = np.array([t % 7 == 6, t % 11 == 10])
+        a_obs, a_rew = ours.step(obs, rewards, dones)
+        b_obs, b_rew, _ = theirs.step(obs, rewards, np.zeros(2), dones)
+        assert np.array_equal(a_obs, b_obs) and np.array_equal(a_rew, b_rew)
+    assert np.allclose(ours.unnormalize_obs(ours.normalize_obs(obs)), obs)
+
+
+def test_normalizer_switched_off_passes_numbers_through():
+    normalizer = Normalizer((1,), False, False, 0.99)
+    normalizer.reset(1)
+    obs, rewards = np.array([[3.0]]), np.array([7.0])
+    out_obs, out_rewards = normalizer.step(obs, rewards, np.array([False]))
+    assert out_obs is obs and out_rewards is rewards
+    assert normalizer.unnormalize_obs(obs) is obs
+
+
+def test_the_hook_gets_observations_unnormalised_with_end_of_rollout_statistics():
+    # As Malik's GailCallback: stored (rescaled) observations times the
+    # current std plus the current mean, the statistics being those at the
+    # end of the rollout (not each step's own, so early steps come back
+    # slightly off their raw values). The rewards it adds to stay rescaled.
+    envs, obs = lgw_envs(2)
+    net = ActorCritic(envs.single_observation_space, envs.single_action_space)
+    normalizer = Normalizer(envs.single_observation_space.shape, True, True, 0.99)
+    normalizer.reset(2)
+    rollout, _, _ = collect_rollout(net, normalizer, envs, normalizer.normalize_obs(obs),
+                                    np.zeros(2, np.float32), 50, 0.99, 0.95)
+    stored_obs, stored_rewards = rollout["observations"].copy(), rollout["rewards"].copy()
+    seen = []
+
+    def hook(observations, actions):
+        seen.append(observations)
+        return np.full(actions.shape, -1.0, dtype=np.float32)
+
+    apply_reward_hook(rollout, hook, normalizer, 0.99, 0.95)
+    expected = stored_obs * np.sqrt(normalizer.obs_rms.var + 1e-8) + normalizer.obs_rms.mean
+    assert np.array_equal(seen[0], expected)
+    assert not np.allclose(seen[0], stored_obs)  # really un-normalised
+    assert np.array_equal(rollout["rewards"], stored_rewards - 1)
+
+
+def test_normalised_training_runs_and_the_hook_is_called():
+    seen = []
+
+    def hook(obs, acs):
+        seen.append(obs.shape)
+        return np.zeros(acs.shape, dtype=np.float32)
+
+    envs = recorded_lgw_envs(2)
+    agent = PPO(envs.single_observation_space, envs.single_action_space,
+                PPOSettings(n_steps=256, normalize_obs=True, normalize_reward=True))
+    log = agent.train(envs, total_steps=512, reward_hook=hook)
+    assert seen == [(256, 2, 1)] and len(log) == 1
+    assert agent.normalizer.obs_rms.count > 512  # statistics took in every step
+
+
+def test_policy_rescales_the_raw_observation():
+    space = spaces.Box(-10.0, 10.0, shape=(1,))
+    agent = PPO(space, spaces.Discrete(2), PPOSettings(normalize_obs=True))
+    agent.normalizer.obs_rms.mean[:] = 100.0  # far from 0: rescaled input differs a lot
+    torch.manual_seed(0)
+    with_stats = [agent.policy(np.array([100.0], np.float32)) for _ in range(200)]
+    torch.manual_seed(0)
+    by_hand = []
+    for _ in range(200):
+        x = torch.as_tensor(agent.normalizer.normalize_obs(np.array([100.0], np.float32))).unsqueeze(0)
+        by_hand.append(int(agent.net.distribution(x).sample()[0]))
+    assert with_stats == by_hand
