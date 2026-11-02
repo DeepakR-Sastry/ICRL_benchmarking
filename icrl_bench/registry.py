@@ -10,6 +10,7 @@ from icrl_bench.featurizers import lap_grid_world as lap_grid_world_features
 from icrl_bench.methods.binary_classifier import BinaryClassifier, BinaryClassifierSettings
 from icrl_bench.methods.gacl import GACL, GACLSettings
 from icrl_bench.methods.maximum_entropy import MaximumEntropy, MaximumEntropySettings
+from icrl_bench.methods.vicrl import VICRL, VICRLSettings
 
 # name -> gymnasium env class; config arguments go to its constructor.
 ENVS = {
@@ -43,6 +44,7 @@ METHODS = {
     "maximum_entropy": (MaximumEntropy, MaximumEntropySettings),
     "binary_classifier": (BinaryClassifier, BinaryClassifierSettings),
     "gacl": (GACL, GACLSettings),
+    "vicrl": (VICRL, VICRLSettings),
 }
 
 # name -> (loop function, settings dataclass, names of the methods it runs).
@@ -51,7 +53,7 @@ METHODS = {
 # cost, so run_icrl would accept it), so each loop lists its methods
 # (docs/decisions.md, 2026-11-01).
 LOOPS = {
-    "icrl": (run_icrl, ICRLLoopSettings, {"maximum_entropy", "binary_classifier"}),
+    "icrl": (run_icrl, ICRLLoopSettings, {"maximum_entropy", "binary_classifier", "vicrl"}),
     "gacl": (run_gacl, GACLLoopSettings, {"gacl"}),
 }
 

@@ -10,9 +10,11 @@ which the method is updated after every rollout (docs/decisions.md,
 
 from dataclasses import dataclass
 
+import numpy as np
+
 from icrl_bench.core.rollout import rollout
 from icrl_bench.core.types import Step, Trajectory
-from icrl_bench.eval.stage2 import reward_stats, true_cost_rate
+from icrl_bench.eval.stage2 import feasible_reward_stats, reward_stats, true_cost_rate
 
 
 @dataclass
@@ -22,6 +24,11 @@ class ICRLLoopSettings:
     n_rounds: int = 100  # -ni
     steps_per_round: int = 1_000_000  # -ft, agent steps per forward step
     n_eval_episodes: int = 10  # hard-coded in icrl.py L248
+    # Liu's use_buffer (train_icrl.py L74-77, L385-391; IRLDataQueue): keep
+    # every nominal trajectory sampled so far and train the method on
+    # len(expert) of them drawn uniformly with replacement. Off = only this
+    # round's, as Malik (docs/decisions.md, 2026-11-01).
+    nominal_buffer: bool = False
     seed: int = 0
 
 
@@ -55,6 +62,8 @@ def run_icrl(agent, envs, method, featurize, expert, make_nominal_env, make_eval
     # Round 0's forward step trains on the untrained constraint (icrl.py L116).
     envs.call("set_cost_fn", learned_cost_fn(featurize, method))
     nominal_env, eval_env = make_nominal_env(), make_eval_env()
+    store = []  # every nominal trajectory so far (nominal_buffer only)
+    rng = np.random.default_rng(s.seed)  # its own stream: changes nothing else
     timesteps = 0
     log = []
     for round_ in range(s.n_rounds):
@@ -70,20 +79,35 @@ def run_icrl(agent, envs, method, featurize, expert, make_nominal_env, make_eval
         # cost wrapper (L216-218).
         nominal = rollout(nominal_env, agent.policy, len(expert), seed)
 
+        # With the buffer, the method's pile is drawn from every round so
+        # far, this one included; repeats allowed (Liu's IRLDataQueue.get).
+        # Liu caps the store at 500 trajectories; his 30 rounds x 10 never
+        # reach it, so there is no cap here.
+        pile = nominal
+        if s.nominal_buffer:
+            store += nominal
+            pile = [store[i] for i in rng.integers(len(store), size=len(expert))]
+
         # Backward step, then hand the new constraint to every env copy
         # (L235-239). Both piles are featurized every round, so they always
         # use the same featurizer state (docs/decisions.md, 2026-10-19).
-        backward = method.update([featurize(t) for t in expert], [featurize(t) for t in nominal])
+        backward = method.update([featurize(t) for t in expert], [featurize(t) for t in pile])
         envs.call("set_cost_fn", learned_cost_fn(featurize, method))
 
         # Grading with the true cost (L243-249).
         evaluation = rollout(eval_env, agent.policy, s.n_eval_episodes, seed)
         reward_mean, reward_std = reward_stats(evaluation)
+        # Liu's evaluation: reward before the first violation, and how many
+        # episodes broke the rule at all (docs/decisions.md, 2026-11-01).
+        feasible_mean, feasible_std, violating = feasible_reward_stats(evaluation, true_cost)
         log.append({
             "round": round_,
             "timesteps": timesteps,
             "true/reward": reward_mean,
             "true/reward_std": reward_std,
+            "true/feasible_reward": feasible_mean,
+            "true/feasible_reward_std": feasible_std,
+            "true/violating_episodes": violating,
             "true/cost": true_cost_rate(nominal, true_cost),
             **{f"forward/{k}": v for k, v in forward[-1].items()},
             **{f"backward/{k}": v for k, v in backward.items()},
@@ -151,18 +175,22 @@ def run_gacl(agent, envs, method, featurize, expert, make_eval_env, true_cost,
         nonlocal n_evaluations
         done = row["steps"] // n_envs  # vector steps so far
         next_end = done + done // (len(log) + 1)  # + one rollout's vector steps
-        reward_mean = reward_std = float("nan")
+        reward_mean = reward_std = feasible_mean = feasible_std = violating = float("nan")
         if row["steps"] < s.total_steps and next_end // s.eval_every > done // s.eval_every:
             # The eval env is seeded at its first use only, as in run_icrl.
             seed = s.seed if n_evaluations == 0 else None
             evaluation = rollout(eval_env, agent.policy, s.n_eval_episodes, seed)
             reward_mean, reward_std = reward_stats(evaluation)
+            feasible_mean, feasible_std, violating = feasible_reward_stats(evaluation, true_cost)
             n_evaluations += 1
         log.append({
             "rollout": len(log),
             "timesteps": row["steps"],
             "true/reward": reward_mean,
             "true/reward_std": reward_std,
+            "true/feasible_reward": feasible_mean,
+            "true/feasible_reward_std": feasible_std,
+            "true/violating_episodes": violating,
             **pending,
             **{f"forward/{k}": v for k, v in row.items()},
         })

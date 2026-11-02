@@ -78,6 +78,8 @@ def test_run_icrl_follows_maliks_order_and_logs_each_round():
     assert [row["timesteps"] for row in log] == [100, 200]
     # An always-forward agent: laps in the constrained world, no violations.
     assert log[0]["true/reward"] == 60.0 and log[0]["true/reward_std"] == 0.0
+    # Never backward: the whole reward is feasible, no episode breaks the rule.
+    assert log[0]["true/feasible_reward"] == 60.0 and log[0]["true/violating_episodes"] == 0.0
     assert log[0]["true/cost"] == 0.0
     assert log[0]["forward/penalty"] == 1.0 and log[0]["backward/cn_loss"] == 0.5
 
@@ -149,6 +151,60 @@ def test_run_gacl_evaluates_when_malik_would_and_logs_each_rollout():
     assert evaluated == [True, True, True, False, True, False]
     # Always forward in the constrained world: 60 every episode.
     assert log[0]["true/reward"] == 60.0 and log[0]["true/reward_std"] == 0.0
+    assert log[0]["true/feasible_reward"] == 60.0 and log[0]["true/violating_episodes"] == 0.0
+    assert np.isnan(log[3]["true/feasible_reward"])     # not evaluated after update 4
     # True cost of the training rollout: env 1 always steps backward.
     assert log[0]["true/cost"] == 0.5
     assert log[0]["backward/disc_loss"] == 0.7 and log[0]["forward/ep_rew_mean"] == 0.0
+
+
+class RoundTaggingRecorder(Recorder):
+    """Recorder whose agent marks each trajectory with its round: in round k
+    it steps backward for the first k steps of an episode, then forward.
+    The method keeps the nominal piles it is given."""
+
+    def __init__(self):
+        super().__init__()
+        self.round, self.piles = -1, []
+        self.calls = 0
+
+    def train(self, envs, total_steps):
+        self.round += 1
+        return super().train(envs, total_steps)
+
+    def policy(self, obs):
+        # Every LapGridWorld episode is 200 steps (nominal and eval alike),
+        # so the step within the episode is the call count modulo 200.
+        step, self.calls = self.calls % 200, self.calls + 1
+        return BACKWARD if step < self.round else FORWARD
+
+    def update(self, expert, nominal):
+        # The round each trajectory came from = its number of backward steps.
+        self.piles.append([int(features[:, 2].sum()) for features in nominal])
+        return super().update(expert, nominal)
+
+
+def run_tagged(nominal_buffer, n_rounds):
+    expert = rollout(LapGridWorld(), always_forward, 3, seed=0)
+    stub = RoundTaggingRecorder()
+    run_icrl(stub, stub, stub, featurize, expert, LapGridWorld,
+             lambda: LapGridWorld(constrained=True), true_cost,
+             ICRLLoopSettings(n_rounds=n_rounds, steps_per_round=100, n_eval_episodes=1,
+                              nominal_buffer=nominal_buffer, seed=0))
+    return stub.piles
+
+
+def test_without_the_buffer_each_round_trains_on_its_own_trajectories():
+    assert run_tagged(False, 4) == [[0, 0, 0], [1, 1, 1], [2, 2, 2], [3, 3, 3]]
+
+
+def test_the_buffer_draws_from_every_round_so_far_with_repeats():
+    # 3 new trajectories per round are added to the store (round k holds
+    # 3(k+1)); then 3 indices are drawn, repeats allowed, from a generator
+    # seeded with the run seed. Index i belongs to round i // 3.
+    rng = np.random.default_rng(0)
+    expected = [[int(i) // 3 for i in rng.integers(3 * (k + 1), size=3)] for k in range(4)]
+    piles = run_tagged(True, 4)
+    assert piles == expected
+    assert piles[0] == [0, 0, 0]                         # round 0 has only its own
+    assert any(r < k for k, pile in enumerate(piles) for r in pile)   # older rounds come back
